@@ -13,7 +13,7 @@ scrn_w = scrn.current_w
 scrn_h = scrn.current_h
 
 running = True
-state = "CONFIG"  # "CONFIG" (size prompt) or "PLAYING"
+state = "CONFIG"  # "CONFIG" or "PLAYING"
 input_text = "45"
 
 # Board geometry
@@ -34,20 +34,33 @@ untraversable_color = "#415a77"
 start_color = traversable_color
 end_color = traversable_color
 
-trail_start_rgb = (0, 240, 255)
-trail_end_rgb = (10, 45, 90)
+# Trail Speed-Heat Colors: Low streak (calm navy/cyan) -> Max streak (electric white-cyan)
+heat_low_rgb = (10, 55, 110)
+heat_mid_rgb = (0, 240, 255)
+heat_max_rgb = (230, 255, 255)
+
 player_cube_color = (255, 230, 0)
 game_over_cube_color = (220, 20, 60)
 
 # -------------------------------------------------------------
-# Screen Shake & Particle System State
+# Screen Shake, Geometric Particles, Shockwaves & Speed Lines
 # -------------------------------------------------------------
 shake_intensity = 0.0
 shake_decay = 0.88
 shake_offset_x = 0
 shake_offset_y = 0
 
+# Particles: [x, y, vx, vy, life_ms, max_life_ms, color, size]
 particles = []
+
+# Shockwaves: [cx, cy, current_radius, max_radius, alpha, color]
+shockwaves = []
+
+# Afterimages: deque of (x, y, w, h, color)
+afterimages = deque(maxlen=4)
+
+# Direction vector of current move for squash/stretch
+current_move_dir = (0, 0)
 
 
 def trigger_screen_shake(intensity=8.0):
@@ -66,9 +79,16 @@ def spawn_particles(px, py, count=15, color=(0, 240, 255), speed=3.0, max_life=3
         particles.append([px, py, vx, vy, life, life, color, size])
 
 
-def update_particles_and_shake(dt_ms):
+def spawn_square_shockwave(cx, cy, max_r=None, color=(0, 240, 255)):
+    if max_r is None:
+        max_r = max(12, cell_size * 2.8)
+    shockwaves.append([cx, cy, 2.0, max_r, 255, color])
+
+
+def update_visual_effects(dt_ms):
     global shake_intensity, shake_offset_x, shake_offset_y
 
+    # Screen shake
     if shake_intensity > 0.4:
         shake_offset_x = random.uniform(-shake_intensity, shake_intensity)
         shake_offset_y = random.uniform(-shake_intensity, shake_intensity)
@@ -78,12 +98,21 @@ def update_particles_and_shake(dt_ms):
         shake_offset_x = 0
         shake_offset_y = 0
 
+    # Particles
     for p in particles[:]:
         p[0] += p[2]
         p[1] += p[3]
         p[4] -= dt_ms
         if p[4] <= 0:
             particles.remove(p)
+
+    # Shockwaves
+    for sw in shockwaves[:]:
+        sw[2] += (sw[3] - sw[2]) * 0.22 + 1.2
+        progress = sw[2] / sw[3]
+        sw[4] = max(0, int(255 * (1.0 - progress)))
+        if progress >= 1.0 or sw[4] <= 0:
+            shockwaves.remove(sw)
 
 # -------------------------------------------------------------
 # Procedural Audio & Dynamic Pitch System
@@ -146,7 +175,7 @@ def play_sfx(name):
 
 
 # -------------------------------------------------------------
-# Player, Movement, History & Hint State
+# Player, Movement, History & Heat Trail
 # -------------------------------------------------------------
 player_grid = [1, 0]
 pixel_x = 0.0
@@ -155,7 +184,6 @@ target_pixel_x = 0.0
 target_pixel_y = 0.0
 is_moving = False
 
-# Tuned high-speed dual lerp system
 BASE_LERP_SPEED = 0.55
 AUTO_LERP_SPEED = 0.85
 current_lerp_speed = BASE_LERP_SPEED
@@ -168,13 +196,13 @@ optimal_steps = 1
 start_time_ms = 0
 final_elapsed_seconds = 0.0
 
-# 3-Second Flash Hint System
 HINT_DURATION_MS = 3000
 hint_used = False
 hint_path = []
 hint_timer_ms = 0
 
 input_buffer = deque(maxlen=2)
+# Stores tuples of (tile_coord, speed_streak_at_entry)
 trail_history = []
 trail_set = set()
 
@@ -182,6 +210,7 @@ start_point = (1, 0)
 end_point = None
 
 maze_surface = None
+scanline_surface = None
 render_surface = pygame.Surface((scrn_w, scrn_h))
 
 directions = [
@@ -274,10 +303,11 @@ def generate():
     optimal_steps = dist.get(inner_tile, max_dist) + 1
 
 
-def pre_render_maze():
-    global maze_surface
+def pre_render_maze_and_scanlines():
+    global maze_surface, scanline_surface
     maze_surface = pygame.Surface((scrn_w, scrn_h))
     maze_surface.fill(background_color)
+
     for key, rect in board["rect"].items():
         if key == end_point:
             pygame.draw.rect(maze_surface, end_color, rect)
@@ -287,6 +317,11 @@ def pre_render_maze():
             pygame.draw.rect(maze_surface, untraversable_color, rect)
         else:
             pygame.draw.rect(maze_surface, traversable_color, rect)
+
+    # 6. Pre-render subtle CRT scanline overlay
+    scanline_surface = pygame.Surface((scrn_w, scrn_h), pygame.SRCALPHA)
+    for y in range(0, scrn_h, 3):
+        pygame.draw.line(scanline_surface, (0, 0, 0, 22), (0, y), (scrn_w, y))
 
 
 def handle_size_input(key_event):
@@ -324,14 +359,15 @@ def start_game_with_size(size):
 def load():
     global player_grid, trail_history, trail_set, pixel_x, pixel_y, target_pixel_x, target_pixel_y
     global is_moving, is_game_over, is_won, moves_count, start_time_ms, final_elapsed_seconds
-    global particles, shake_intensity, hint_used, hint_path, hint_timer_ms, glide_streak, current_lerp_speed
+    global particles, shockwaves, afterimages, shake_intensity, hint_used, hint_path, hint_timer_ms
+    global glide_streak, current_lerp_speed, current_move_dir
 
     initialize()
     generate()
-    pre_render_maze()
+    pre_render_maze_and_scanlines()
 
     player_grid = list(start_point)
-    trail_history = [tuple(player_grid)]
+    trail_history = [(tuple(player_grid), 0)]
     trail_set = {tuple(player_grid)}
 
     init_x, init_y = grid_to_pixel(player_grid[0], player_grid[1])
@@ -344,6 +380,8 @@ def load():
     start_time_ms = pygame.time.get_ticks()
     final_elapsed_seconds = 0.0
     particles.clear()
+    shockwaves.clear()
+    afterimages.clear()
     shake_intensity = 0.0
     input_buffer.clear()
 
@@ -351,6 +389,7 @@ def load():
     hint_path = []
     hint_timer_ms = 0
     glide_streak = 0
+    current_move_dir = (0, 0)
     current_lerp_speed = BASE_LERP_SPEED
 
 
@@ -407,7 +446,7 @@ def trigger_hint():
 
 
 def try_step(dh, dw, is_auto=False):
-    global target_pixel_x, target_pixel_y, is_moving, moves_count, current_lerp_speed
+    global target_pixel_x, target_pixel_y, is_moving, moves_count, current_lerp_speed, current_move_dir
 
     if is_game_over or is_won:
         return False
@@ -420,9 +459,11 @@ def try_step(dh, dw, is_auto=False):
         if target not in trail_set:
             player_grid[0] = nh
             player_grid[1] = nw
-            trail_history.append(target)
+            # Save tile coordinate paired with the active glide streak for chrono-heat shading
+            trail_history.append((target, glide_streak))
             trail_set.add(target)
             moves_count += 1
+            current_move_dir = (dh, dw)
 
             current_lerp_speed = min(
                 0.95, AUTO_LERP_SPEED + (glide_streak * 0.01)) if is_auto else BASE_LERP_SPEED
@@ -444,7 +485,7 @@ def queue_input(dh, dw):
 
 def undo():
     global player_grid, pixel_x, pixel_y, target_pixel_x, target_pixel_y
-    global is_moving, is_game_over, is_won, glide_streak, current_lerp_speed
+    global is_moving, is_game_over, is_won, glide_streak, current_lerp_speed, afterimages, current_move_dir
 
     if is_moving or len(trail_history) <= 1:
         return
@@ -452,21 +493,24 @@ def undo():
     is_game_over = False
     is_won = False
     glide_streak = 0
+    current_move_dir = (0, 0)
     current_lerp_speed = BASE_LERP_SPEED
     input_buffer.clear()
+    afterimages.clear()
 
-    removed = trail_history.pop()
-    trail_set.discard(removed)
+    removed_tile, _ = trail_history.pop()
+    trail_set.discard(removed_tile)
 
     while len(trail_history) > 1:
-        prev = trail_history[-1]
-        player_grid = list(prev)
-        if len(get_available_moves(prev)) > 1:
+        prev_tile, _ = trail_history[-1]
+        player_grid = list(prev_tile)
+        if len(get_available_moves(prev_tile)) > 1:
             break
-        removed = trail_history.pop()
-        trail_set.discard(removed)
+        removed_tile, _ = trail_history.pop()
+        trail_set.discard(removed_tile)
 
-    player_grid = list(trail_history[-1])
+    last_tile, _ = trail_history[-1]
+    player_grid = list(last_tile)
     init_x, init_y = grid_to_pixel(player_grid[0], player_grid[1])
     pixel_x = target_pixel_x = init_x
     pixel_y = target_pixel_y = init_y
@@ -481,37 +525,73 @@ def process_buffered_input():
     return False
 
 
+def get_squash_and_stretch_geometry():
+    """Calculates directional elongation during high-speed gliding."""
+    if glide_streak < 2 or not is_moving:
+        return round(pixel_x), round(pixel_y), cell_size, cell_size
+
+    # Stretch factor scales cleanly with speed streak (1-3px delta)
+    stretch = min(
+        3, max(1, int(cell_size * 0.12 * min(1.0, glide_streak / 6.0))))
+    dh, dw = current_move_dir
+
+    if dw != 0:  # Horizontal dash: stretch X, squash Y
+        rx = round(pixel_x - (stretch if dw > 0 else 0))
+        ry = round(pixel_y + stretch // 2)
+        rw = cell_size + stretch
+        rh = max(2, cell_size - stretch)
+    elif dh != 0:  # Vertical dash: squash X, stretch Y
+        rx = round(pixel_x + stretch // 2)
+        ry = round(pixel_y - (stretch if dh > 0 else 0))
+        rw = max(2, cell_size - stretch)
+        rh = cell_size + stretch
+    else:
+        rx, ry, rw, rh = round(pixel_x), round(pixel_y), cell_size, cell_size
+
+    return rx, ry, rw, rh
+
+
 def update_player_animation(dt_ms=16.6):
-    global pixel_x, pixel_y, is_moving, is_game_over, is_won, final_elapsed_seconds, glide_streak, current_lerp_speed
+    global pixel_x, pixel_y, is_moving, is_game_over, is_won, final_elapsed_seconds
+    global glide_streak, current_lerp_speed, current_move_dir
 
     if state != "PLAYING":
         return
 
-    update_particles_and_shake(dt_ms)
+    update_visual_effects(dt_ms)
 
     if not is_moving:
+        afterimages.clear()
         return
+
+    # 2. Record afterimages with matching stretched bounds
+    if glide_streak > 0:
+        rx, ry, rw, rh = get_squash_and_stretch_geometry()
+        afterimages.append((rx, ry, rw, rh, player_cube_color))
 
     pixel_x += (target_pixel_x - pixel_x) * current_lerp_speed
     pixel_y += (target_pixel_y - pixel_y) * current_lerp_speed
 
-    # Snappier 1.2px threshold eliminates the slow deceleration tail
     if abs(pixel_x - target_pixel_x) < 1.2 and abs(pixel_y - target_pixel_y) < 1.2:
         pixel_x = target_pixel_x
         pixel_y = target_pixel_y
         is_moving = False
+        afterimages.clear()
 
         center_p_x = pixel_x + cell_size / 2
         center_p_y = pixel_y + cell_size / 2
 
         if tuple(player_grid) == end_point:
             glide_streak = 0
+            current_move_dir = (0, 0)
             current_lerp_speed = BASE_LERP_SPEED
             is_won = True
             final_elapsed_seconds = (
                 pygame.time.get_ticks() - start_time_ms) / 1000.0
             input_buffer.clear()
             trigger_screen_shake(12.0)
+            spawn_square_shockwave(
+                center_p_x, center_p_y, max_r=cell_size * 5.0, color=(255, 215, 0))
             spawn_particles(center_p_x, center_p_y, count=40,
                             color=(255, 215, 0), speed=5.5, max_life=600)
             return
@@ -520,6 +600,7 @@ def update_player_animation(dt_ms=16.6):
 
         if len(available) == 0:
             glide_streak = 0
+            current_move_dir = (0, 0)
             current_lerp_speed = BASE_LERP_SPEED
             is_game_over = True
             final_elapsed_seconds = (
@@ -527,6 +608,8 @@ def update_player_animation(dt_ms=16.6):
             input_buffer.clear()
             play_sfx("deadend")
             trigger_screen_shake(9.0)
+            spawn_square_shockwave(
+                center_p_x, center_p_y, max_r=cell_size * 3.5, color=(220, 20, 60))
             spawn_particles(center_p_x, center_p_y, count=25,
                             color=(220, 20, 60), speed=4.0, max_life=450)
             return
@@ -541,7 +624,12 @@ def update_player_animation(dt_ms=16.6):
             return
 
         else:
+            # 1. Intersection Arrived: Trigger absorption square shockwave
+            if glide_streak > 1:
+                spawn_square_shockwave(
+                    center_p_x, center_p_y, max_r=cell_size * 2.2, color=(0, 240, 255))
             glide_streak = 0
+            current_move_dir = (0, 0)
             current_lerp_speed = BASE_LERP_SPEED
             process_buffered_input()
 
@@ -566,6 +654,39 @@ def draw_hint_line(surface):
     pygame.draw.lines(glow_surf, (255, 255, 230, alpha),
                       False, points, max(1, cell_size // 6))
     surface.blit(glow_surf, (0, 0))
+
+
+def draw_speed_lines(surface):
+    """4. Flashes 1px telemetry speed ticks on screen borders during max streak."""
+    if glide_streak < 5:
+        return
+
+    dh, dw = current_move_dir
+    line_surf = pygame.Surface((scrn_w, scrn_h), pygame.SRCALPHA)
+    streak_intensity = min(1.0, (glide_streak - 4) / 8.0)
+    alpha = int(140 * streak_intensity)
+
+    # Horizontal speed lines
+    if dw != 0:
+        for _ in range(7):
+            y = random.randint(start_y, start_y + board_size)
+            length = random.randint(35, 120)
+            x = random.randint(
+                0, start_x - 10) if dw > 0 else random.randint(start_x + board_size + 10, scrn_w - 60)
+            pygame.draw.line(line_surf, (0, 240, 255, alpha),
+                             (x, y), (x + length, y), 1)
+
+    # Vertical speed lines
+    elif dh != 0:
+        for _ in range(7):
+            x = random.randint(start_x, start_x + board_size)
+            length = random.randint(35, 120)
+            y = random.randint(
+                0, start_y - 10) if dh > 0 else random.randint(start_y + board_size + 10, scrn_h - 60)
+            pygame.draw.line(line_surf, (0, 240, 255, alpha),
+                             (x, y), (x, y + length), 1)
+
+    surface.blit(line_surf, (0, 0))
 
 
 def draw_config(screen):
@@ -602,40 +723,102 @@ def draw(screen):
     if maze_surface:
         render_surface.blit(maze_surface, (0, 0))
 
-    # Trail
-    total_trail = len(trail_history)
-    for idx, key in enumerate(trail_history):
-        t = (idx / max(1, total_trail - 1))
-        r = int(trail_end_rgb[0] + (trail_start_rgb[0] - trail_end_rgb[0]) * t)
-        g = int(trail_end_rgb[1] + (trail_start_rgb[1] - trail_end_rgb[1]) * t)
-        b = int(trail_end_rgb[2] + (trail_start_rgb[2] - trail_end_rgb[2]) * t)
+    # 5. Exit Portal Concentric Implosion Core
+    if end_point:
+        end_rect = board["rect"][end_point]
+        t = pygame.time.get_ticks() * 0.003
+        for ring_idx in range(3):
+            phase = (t + ring_idx * (1.0 / 3.0)) % 1.0
+            # Concentric frames shrink inward toward the core
+            scale = 1.0 - phase
+            w = max(2, int(cell_size * scale))
+            h = max(2, int(cell_size * scale))
+            rx = end_rect.centerx - w // 2
+            ry = end_rect.centery - h // 2
+            ring_alpha = int(220 * phase)
+            ring_surf = pygame.Surface((w, h), pygame.SRCALPHA)
+            pygame.draw.rect(
+                ring_surf, (255, 180, 30, ring_alpha), (0, 0, w, h), 1)
+            render_surface.blit(ring_surf, (rx, ry))
+
+    # 3. Chrono-Heat Speed Trail
+    for key, streak_val in trail_history:
+        # Calculate heat based on streak: 0 -> Navy/Cyan, >=8 -> Pure Electric White-Cyan
+        heat_ratio = min(1.0, streak_val / 8.0)
+        if heat_ratio < 0.5:
+            t = heat_ratio * 2.0
+            r = int(heat_low_rgb[0] + (heat_mid_rgb[0] - heat_low_rgb[0]) * t)
+            g = int(heat_low_rgb[1] + (heat_mid_rgb[1] - heat_low_rgb[1]) * t)
+            b = int(heat_low_rgb[2] + (heat_mid_rgb[2] - heat_low_rgb[2]) * t)
+        else:
+            t = (heat_ratio - 0.5) * 2.0
+            r = int(heat_mid_rgb[0] + (heat_max_rgb[0] - heat_mid_rgb[0]) * t)
+            g = int(heat_mid_rgb[1] + (heat_max_rgb[1] - heat_mid_rgb[1]) * t)
+            b = int(heat_mid_rgb[2] + (heat_max_rgb[2] - heat_mid_rgb[2]) * t)
         pygame.draw.rect(render_surface, (r, g, b), board["rect"][key])
 
     # 3-Second Glowing Path Hint
     draw_hint_line(render_surface)
 
-    # Intersection indicators
+    # Sharp Square Reticle Intersection Markers
     if not is_moving and not is_game_over and not is_won:
         available = get_available_moves()
         if len(available) >= 2:
             ch, cw = player_grid
+            marker_dim = max(2, cell_size // 4)
             for dh, dw in available:
                 target_rect = board["rect"][(ch + dh, cw + dw)]
-                pygame.draw.circle(render_surface, (255, 230, 0),
-                                   target_rect.center, max(2, cell_size // 5))
+                cx, cy = target_rect.center
+                reticle_rect = pygame.Rect(
+                    cx - marker_dim // 2, cy - marker_dim // 2, marker_dim, marker_dim)
+                pygame.draw.rect(render_surface, (255, 230, 0), reticle_rect)
 
-    # Particles
+    # 2. High-Speed Stretched Afterimage Silhouettes
+    for idx, (gx, gy, gw, gh, col) in enumerate(afterimages):
+        alpha_factor = (idx + 1) / (len(afterimages) + 1)
+        ghost_surf = pygame.Surface((gw, gh), pygame.SRCALPHA)
+        ghost_surf.fill((col[0], col[1], col[2], int(95 * alpha_factor)))
+        render_surface.blit(ghost_surf, (round(gx), round(gy)))
+
+    # 1. Sharp Expanding Square Shockwaves
+    for sw in shockwaves:
+        cx, cy, current_r, _, alpha, col = sw
+        side = int(current_r * 2)
+        if side > 2 and alpha > 0:
+            sw_surf = pygame.Surface((side, side), pygame.SRCALPHA)
+            pygame.draw.rect(
+                sw_surf, (col[0], col[1], col[2], alpha), (0, 0, side, side), 1)
+            render_surface.blit(sw_surf, (cx - side // 2, cy - side // 2))
+
+    # Sharp Square Debris Particles
     for p in particles:
         alpha_ratio = max(0.0, p[4] / p[5])
         size = max(1.0, p[7] * alpha_ratio)
-        pygame.draw.circle(
-            render_surface, p[6], (round(p[0]), round(p[1])), round(size))
+        p_rect = pygame.Rect(round(
+            p[0] - size / 2), round(p[1] - size / 2), max(1, round(size)), max(1, round(size)))
+        pygame.draw.rect(render_surface, p[6], p_rect)
 
-    # Player cube (Strict sharp-corner geometry)
+    # 2. Stretched Player Cube & Concentric Stepped Glow
     color = game_over_cube_color if is_game_over else player_cube_color
-    player_rect = pygame.Rect(
-        round(pixel_x), round(pixel_y), cell_size, cell_size)
+    px, py, pw, ph = get_squash_and_stretch_geometry()
+    player_rect = pygame.Rect(px, py, pw, ph)
+
+    glow_surf = pygame.Surface((scrn_w, scrn_h), pygame.SRCALPHA)
+    pygame.draw.rect(
+        glow_surf, (color[0], color[1], color[2], 50), player_rect.inflate(6, 6), 1)
+    pygame.draw.rect(
+        glow_surf, (color[0], color[1], color[2], 120), player_rect.inflate(2, 2), 1)
+    render_surface.blit(glow_surf, (0, 0))
+
+    # Core Player Cube
     pygame.draw.rect(render_surface, color, player_rect)
+
+    # 4. Perimeter Speed Dash Lines
+    draw_speed_lines(render_surface)
+
+    # 6. CRT Digital Scanline Overlay
+    if scanline_surface:
+        render_surface.blit(scanline_surface, (0, 0))
 
     # HUD Elements
     hud_font = pygame.font.SysFont(
