@@ -2,8 +2,29 @@ import pygame
 import game
 
 pygame.init()
-screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+
+# Initial windowed dimensions
+windowed_w, windowed_h = 1280, 720
+is_fullscreen = False
+
+screen = pygame.display.set_mode((windowed_w, windowed_h), pygame.RESIZABLE)
 clock = pygame.time.Clock()
+
+game.handle_resize(screen.get_width(), screen.get_height())
+
+
+def toggle_fullscreen():
+    global screen, is_fullscreen, windowed_w, windowed_h
+    is_fullscreen = not is_fullscreen
+    if is_fullscreen:
+        # Cache windowed size prior to going fullscreen
+        windowed_w, windowed_h = screen.get_width(), screen.get_height()
+        screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+    else:
+        screen = pygame.display.set_mode(
+            (windowed_w, windowed_h), pygame.RESIZABLE)
+    game.handle_resize(screen.get_width(), screen.get_height())
+
 
 while game.running:
     dt = clock.tick(game.fps)
@@ -11,8 +32,19 @@ while game.running:
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             game.running = False
+
+        elif event.type == pygame.VIDEORESIZE:
+            if not is_fullscreen:
+                screen = pygame.display.set_mode(
+                    (event.w, event.h), pygame.RESIZABLE)
+                game.handle_resize(event.w, event.h)
+
         elif event.type == pygame.KEYDOWN:
-            if event.key == pygame.K_ESCAPE:
+            # Global Fullscreen Toggle
+            if event.key == pygame.K_f:
+                toggle_fullscreen()
+
+            elif event.key == pygame.K_ESCAPE:
                 if game.state == "PLAYING" or game.state == "CONFIG":
                     game.state = "MENU"
                 else:

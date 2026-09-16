@@ -47,9 +47,9 @@ cam_lead_y = 0.0
 fps = 1000
 
 # -------------------------------------------------------------
-# Deep Sapphire & Violet Palette
+# Color Architecture
 # -------------------------------------------------------------
-bg_outer_rgb = (7, 6, 12)          # Ultra-deep obsidian edge
+bg_outer_rgb = (7, 6, 12)          # Deep obsidian edge
 bg_center_rgb = (26, 19, 44)       # Dark violet ambient center bloom
 
 wall_color_rgb = (16, 13, 28)      # Clean dark slate boundary wall
@@ -59,9 +59,15 @@ card_bg_rgb = (22, 19, 34)
 card_border_rgb = (58, 48, 88)
 card_accent_glow = (120, 80, 210)
 
+# Player & Trail (Pure solid violet spectrum)
 player_cube_color = (216, 180, 254)  # High-intensity lavender
 trail_color = (168, 85, 247)        # Saturated electric purple
 game_over_cube_color = (244, 63, 94)
+
+# Exit / Portal Palette (Cyan-Teal negative space void)
+exit_base_rgb = (10, 8, 20)           # Dark hollow void
+exit_accent_rgb = (6, 182, 212)       # Crisp electric cyan
+exit_ring_rgb = (34, 211, 238)        # Neon teal pulse
 
 text_primary = (245, 243, 255)
 text_secondary = (167, 159, 194)
@@ -255,7 +261,6 @@ pixel_x = 0.0
 pixel_y = 0.0
 is_moving = False
 
-# Auto-glide duration: unbounded minimum, 1.0 second max ceiling
 BASE_MS_PER_TILE = 35.0
 MAX_CORRIDOR_TIME_MS = 1000.0
 MANUAL_SINGLE_STEP_MS = 90.0
@@ -472,12 +477,14 @@ def pre_render_maze():
         maze_surface = pygame.Surface((scrn_w, scrn_h), pygame.SRCALPHA)
         for key, rect in board["rect"].items():
             if key == end_point:
-                pygame.draw.rect(maze_surface, (168, 85, 247), rect)
+                pygame.draw.rect(maze_surface, exit_base_rgb, rect)
+                pygame.draw.rect(maze_surface, exit_accent_rgb, rect, width=1)
             elif board["value"][key] == 1:
                 pygame.draw.rect(maze_surface, wall_color_rgb, rect)
             else:
-                pygame.draw.rect(maze_surface, corridor_color_rgb, rect)
-                pygame.draw.rect(maze_surface, wall_color_rgb, rect, width=1)
+                seamless_rect = rect.inflate(1, 1)
+                pygame.draw.rect(
+                    maze_surface, corridor_color_rgb, seamless_rect)
     else:
         maze_surface = None
 
@@ -874,9 +881,9 @@ def update_player_animation(dt_ms=16.6):
             input_buffer.clear()
             trigger_screen_shake(12.0)
             spawn_square_shockwave(
-                center_p_x, center_p_y, max_r=cell_size * 5.0, color=player_cube_color)
+                center_p_x, center_p_y, max_r=cell_size * 5.0, color=exit_accent_rgb)
             spawn_particles(center_p_x, center_p_y, count=40,
-                            color=accent_bright, speed=5.5, max_life=600)
+                            color=exit_ring_rgb, speed=5.5, max_life=600)
 
             if game_mode == "GAUNTLET":
                 if rows < GAUNTLET_MAX_SIZE:
@@ -950,13 +957,13 @@ def draw_exit_pointer(surface, ox, oy):
     notch = (edge_x, edge_y)
 
     poly = [tip, left, notch, right]
-    pygame.draw.polygon(surface, accent_purple, poly)
-    pygame.draw.polygon(surface, accent_bright, poly, 1)
+    pygame.draw.polygon(surface, exit_accent_rgb, poly)
+    pygame.draw.polygon(surface, exit_ring_rgb, poly, 1)
 
     dist_tiles = int(math.hypot(
         end_point[0] - player_grid[0], end_point[1] - player_grid[1]))
     font = pygame.font.SysFont("Consolas", 14, bold=True)
-    txt = font.render(f"{dist_tiles}m", True, accent_bright)
+    txt = font.render(f"{dist_tiles}m", True, exit_ring_rgb)
 
     txt_x = edge_x - math.cos(angle) * 24 - txt.get_width() // 2
     txt_y = edge_y - math.sin(angle) * 24 - txt.get_height() // 2
@@ -1029,6 +1036,43 @@ def draw_frosted_card(surface, rect, border_radius=14, glow=False):
         glow_rect = rect.inflate(2, 2)
         pygame.draw.rect(surface, card_accent_glow, glow_rect,
                          width=1, border_radius=border_radius + 1)
+
+
+def handle_resize(new_w, new_h):
+    """Dynamically recalculates coordinate centers, surfaces, and camera viewports."""
+    global scrn_w, scrn_h, center_x, center_y, render_surface, MAX_STATIC_SIZE
+    global cell_size, board_size, start_x, start_y, pixel_x, pixel_y, cam_x, cam_y
+
+    scrn_w = new_w
+    scrn_h = new_h
+    center_x = scrn_w // 2
+    center_y = scrn_h // 2
+
+    render_surface = pygame.Surface((scrn_w, scrn_h))
+    pre_render_background_gradient()
+
+    MAX_STATIC_SIZE = int((min(scrn_w, scrn_h) * 0.82) // MIN_READABLE_CELL_PX)
+    MAX_STATIC_SIZE = MAX_STATIC_SIZE if MAX_STATIC_SIZE % 2 != 0 else MAX_STATIC_SIZE - 1
+
+    if state == "PLAYING":
+        if is_camera_follow:
+            cell_size = max(22, int(min(scrn_w, scrn_h) * 0.026))
+            board_size = cell_size * rows
+            start_x = 0
+            start_y = 0
+        else:
+            target_board_space = int(min(scrn_w, scrn_h) * 0.82)
+            cell_size = target_board_space // rows
+            board_size = cell_size * rows
+            start_x = center_x - board_size // 2
+            start_y = center_y - board_size // 2
+
+        pixel_x, pixel_y = grid_to_pixel(player_grid[0], player_grid[1])
+        cam_x = pixel_x + cell_size / 2 - center_x
+        cam_y = pixel_y + cell_size / 2 - center_y
+
+        initialize()
+        pre_render_maze()
 
 
 def draw_menu(screen):
@@ -1162,42 +1206,53 @@ def draw(screen):
                 draw_rect = pygame.Rect(rx, ry, cell_size, cell_size)
 
                 if key == end_point:
-                    pygame.draw.rect(render_surface, (168, 85, 247), draw_rect)
+                    pygame.draw.rect(render_surface, exit_base_rgb, draw_rect)
+                    pygame.draw.rect(
+                        render_surface, exit_accent_rgb, draw_rect, width=1)
                 elif val == 1:
                     pygame.draw.rect(render_surface, wall_color_rgb, draw_rect)
                 else:
+                    seamless_rect = draw_rect.inflate(1, 1)
                     pygame.draw.rect(
-                        render_surface, corridor_color_rgb, draw_rect)
-                    pygame.draw.rect(
-                        render_surface, wall_color_rgb, draw_rect, width=1)
+                        render_surface, corridor_color_rgb, seamless_rect)
 
-    # Concentric Implosion Portal
+    # ---------------------------------------------------------
+    # Receding Cyan Vortex Exit (Hollow, Non-Competing)
+    # ---------------------------------------------------------
     if end_point:
         ex = start_x + end_point[1] * cell_size - ox
         ey = start_y + end_point[0] * cell_size - oy
         end_rect = pygame.Rect(ex, ey, cell_size, cell_size)
 
-        t = pygame.time.get_ticks() * 0.003
-        for ring_idx in range(3):
-            phase = (t + ring_idx * (1.0 / 3.0)) % 1.0
-            scale = 1.0 - phase
+        pygame.draw.rect(render_surface, exit_base_rgb, end_rect)
+        pygame.draw.rect(render_surface, exit_accent_rgb, end_rect, 1)
+
+        t = pygame.time.get_ticks() * 0.0025
+        for ring_idx in range(2):
+            phase = (t + ring_idx * 0.5) % 1.0
+            scale = 0.2 + (0.8 * (1.0 - phase))
             w = max(2, int(cell_size * scale))
             h = max(2, int(cell_size * scale))
             rx = end_rect.centerx - w // 2
             ry = end_rect.centery - h // 2
-            ring_alpha = int(220 * phase)
+            ring_alpha = int(180 * phase)
             ring_surf = pygame.Surface((w, h), pygame.SRCALPHA)
             pygame.draw.rect(
-                ring_surf, (216, 180, 254, ring_alpha), (0, 0, w, h), 1)
+                ring_surf, (exit_ring_rgb[0], exit_ring_rgb[1], exit_ring_rgb[2], ring_alpha), (0, 0, w, h), 1)
             render_surface.blit(ring_surf, (rx, ry))
 
-    # Trail (Solid Electric Purple)
+        core_dim = max(2, cell_size // 5)
+        core_rect = pygame.Rect(end_rect.centerx - core_dim // 2,
+                                end_rect.centery - core_dim // 2, core_dim, core_dim)
+        pygame.draw.rect(render_surface, exit_ring_rgb, core_rect)
+
+    # Seamless Solid Electric Purple Ribbon Trail
     for key in trail_history:
         rx = start_x + key[1] * cell_size - ox
         ry = start_y + key[0] * cell_size - oy
         if -cell_size <= rx <= scrn_w and -cell_size <= ry <= scrn_h:
-            pygame.draw.rect(render_surface, trail_color,
-                             pygame.Rect(rx, ry, cell_size, cell_size))
+            t_rect = pygame.Rect(rx, ry, cell_size, cell_size).inflate(1, 1)
+            pygame.draw.rect(render_surface, trail_color, t_rect)
 
     draw_hint_line(render_surface, ox, oy)
 
@@ -1241,6 +1296,7 @@ def draw(screen):
     player_rect = pygame.Rect(
         round(px - ox), round(py - oy), round(pw), round(ph))
 
+    # Stepped Lavender Bloom
     glow_surf = pygame.Surface((scrn_w, scrn_h), pygame.SRCALPHA)
     pygame.draw.rect(
         glow_surf, (color[0], color[1], color[2], 50), player_rect.inflate(8, 8), 1)
@@ -1253,6 +1309,9 @@ def draw(screen):
     draw_speed_lines(render_surface)
     draw_exit_pointer(render_surface, ox, oy)
 
+    # ---------------------------------------------------------
+    # UI Dashboard Widgets
+    # ---------------------------------------------------------
     label_font = pygame.font.SysFont("Segoe UI", 11, bold=True)
     val_font = pygame.font.SysFont("Segoe UI", 17, bold=True)
     sub_font = pygame.font.SysFont("Segoe UI", 11)
