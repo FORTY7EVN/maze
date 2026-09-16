@@ -13,9 +13,15 @@ while game.running:
             game.running = False
         elif event.type == pygame.KEYDOWN:
             if event.key == pygame.K_ESCAPE:
-                game.running = False
+                if game.state == "PLAYING" or game.state == "CONFIG":
+                    game.state = "MENU"
+                else:
+                    game.running = False
 
-            if game.state == "CONFIG":
+            elif game.state == "MENU":
+                game.handle_menu_input(event)
+
+            elif game.state == "CONFIG":
                 game.handle_size_input(event)
 
             elif game.state == "PLAYING":
@@ -32,9 +38,9 @@ while game.running:
                 elif event.key == pygame.K_h:
                     game.trigger_hint()
                 elif event.key == pygame.K_r:
-                    game.load()
-                elif event.key == pygame.K_n:
-                    game.state = "CONFIG"
+                    game.reset_game()
+                elif event.key == pygame.K_m:
+                    game.state = "MENU"
 
     game.update_player_animation(dt)
 
