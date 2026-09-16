@@ -13,22 +13,19 @@ scrn_w = scrn.current_w
 scrn_h = scrn.current_h
 
 running = True
-state = "MENU"  # "MENU", "CONFIG", "PLAYING"
-game_mode = "CUSTOM"  # "CUSTOM" or "GAUNTLET"
+state = "MENU"
+game_mode = "CUSTOM"
 input_text = "45"
 
-# Resolution-based static readability threshold
 MIN_READABLE_CELL_PX = 12
 MAX_STATIC_SIZE = int((min(scrn_w, scrn_h) * 0.82) // MIN_READABLE_CELL_PX)
 MAX_STATIC_SIZE = MAX_STATIC_SIZE if MAX_STATIC_SIZE % 2 != 0 else MAX_STATIC_SIZE - 1
 
-# Gauntlet mode progress
 GAUNTLET_START_SIZE = 15
 GAUNTLET_STEP = 10
 GAUNTLET_MAX_SIZE = 995
 gauntlet_level = 1
 
-# Board geometry
 rows = 45
 cell_size = 10
 board_size = 0
@@ -37,37 +34,29 @@ center_y = scrn_h // 2
 start_x = 0
 start_y = 0
 
-# Camera state
 is_camera_follow = False
 cam_x = 0.0
 cam_y = 0.0
 cam_lead_x = 0.0
 cam_lead_y = 0.0
 
-fps = 1000
+bg_outer_rgb = (7, 6, 12)
+bg_center_rgb = (26, 19, 44)
 
-# -------------------------------------------------------------
-# Color Architecture
-# -------------------------------------------------------------
-bg_outer_rgb = (7, 6, 12)          # Deep obsidian edge
-bg_center_rgb = (26, 19, 44)       # Dark violet ambient center bloom
-
-wall_color_rgb = (16, 13, 28)      # Clean dark slate boundary wall
-corridor_color_rgb = (28, 23, 46)  # Single static dark violet passage
+wall_color_rgb = (16, 13, 28)
+corridor_color_rgb = (28, 23, 46)
 
 card_bg_rgb = (22, 19, 34)
 card_border_rgb = (58, 48, 88)
 card_accent_glow = (120, 80, 210)
 
-# Player & Trail (Pure solid violet spectrum)
-player_cube_color = (216, 180, 254)  # High-intensity lavender
-trail_color = (168, 85, 247)        # Saturated electric purple
+player_cube_color = (216, 180, 254)
+trail_color = (168, 85, 247)
 game_over_cube_color = (244, 63, 94)
 
-# Exit / Portal Palette (Cyan-Teal negative space void)
-exit_base_rgb = (10, 8, 20)           # Dark hollow void
-exit_accent_rgb = (6, 182, 212)       # Crisp electric cyan
-exit_ring_rgb = (34, 211, 238)        # Neon teal pulse
+exit_base_rgb = (10, 8, 20)
+exit_accent_rgb = (6, 182, 212)
+exit_ring_rgb = (34, 211, 238)
 
 text_primary = (245, 243, 255)
 text_secondary = (167, 159, 194)
@@ -75,7 +64,6 @@ text_muted = (109, 101, 136)
 accent_purple = (168, 85, 247)
 accent_bright = (233, 213, 255)
 
-# Visual effects
 shake_intensity = 0.0
 shake_decay = 0.88
 shake_offset_x = 0
@@ -86,62 +74,7 @@ shockwaves = []
 afterimages = deque(maxlen=6)
 current_move_dir = (0, 0)
 
-# -------------------------------------------------------------
-# Anti-Banding Hardware Vignette Generator (High-Bit TPDF Dither)
-# -------------------------------------------------------------
-bg_surface = pygame.Surface((scrn_w, scrn_h))
-
-
-def pre_render_background_gradient():
-    global bg_surface
-    bg_surface = pygame.Surface((scrn_w, scrn_h), depth=32)
-
-    cx = scrn_w / 2.0
-    cy = scrn_h / 2.0
-    max_radius = math.hypot(cx, cy) * 1.15
-
-    dr = bg_outer_rgb[0] - bg_center_rgb[0]
-    dg = bg_outer_rgb[1] - bg_center_rgb[1]
-    db = bg_outer_rgb[2] - bg_center_rgb[2]
-
-    lut_size = 2048
-    lut_r = [0.0] * lut_size
-    lut_g = [0.0] * lut_size
-    lut_b = [0.0] * lut_size
-
-    for i in range(lut_size):
-        t = i / float(lut_size - 1)
-        smooth_t = t * t * (3.0 - 2.0 * t)
-        lut_r[i] = bg_center_rgb[0] + dr * smooth_t
-        lut_g[i] = bg_center_rgb[1] + dg * smooth_t
-        lut_b[i] = bg_center_rgb[2] + db * smooth_t
-
-    px_array = pygame.PixelArray(bg_surface)
-
-    for y in range(scrn_h):
-        dy = y - cy
-        dy2 = dy * dy
-        for x in range(scrn_w):
-            dx = x - cx
-            dist = math.sqrt(dx * dx + dy2)
-            norm = min(1.0, dist / max_radius)
-            idx = int(norm * (lut_size - 1))
-
-            noise = ((math.sin(x * 12.9898 + y * 78.233)
-                     * 43758.5453) % 1.0) - 0.5
-            noise += ((math.cos(x * 4.898 + y * 13.233) * 23421.631) %
-                      1.0) - 0.5
-
-            r = int(max(0, min(255, lut_r[idx] + noise * 1.4)))
-            g = int(max(0, min(255, lut_g[idx] + noise * 1.4)))
-            b = int(max(0, min(255, lut_b[idx] + noise * 1.4)))
-
-            px_array[x, y] = (r << 16) | (g << 8) | b
-
-    del px_array
-
-
-pre_render_background_gradient()
+render_surface = pygame.Surface((scrn_w, scrn_h), depth=32)
 
 
 def trigger_screen_shake(intensity=8.0):
@@ -193,8 +126,6 @@ def update_visual_effects(dt_ms):
         sw[4] = max(0, int(255 * (1.0 - progress)))
         if progress >= 1.0 or sw[4] <= 0:
             shockwaves.remove(sw)
-
-# Procedural Audio
 
 
 def make_tone(freq, duration_ms, wave_type="sine", volume=0.25):
@@ -255,7 +186,6 @@ def play_sfx(name):
         sound_levelup.play()
 
 
-# Movement & Maze State
 player_grid = [1, 0]
 pixel_x = 0.0
 pixel_y = 0.0
@@ -292,7 +222,6 @@ start_point = (1, 0)
 end_point = None
 
 maze_surface = None
-render_surface = pygame.Surface((scrn_w, scrn_h))
 
 directions = [
     (-2, 0),
@@ -474,7 +403,8 @@ def generate():
 def pre_render_maze():
     global maze_surface
     if not is_camera_follow:
-        maze_surface = pygame.Surface((scrn_w, scrn_h), pygame.SRCALPHA)
+        maze_surface = pygame.Surface((scrn_w, scrn_h), depth=32).convert()
+        maze_surface.fill(bg_center_rgb)
         for key, rect in board["rect"].items():
             if key == end_point:
                 pygame.draw.rect(maze_surface, exit_base_rgb, rect)
@@ -1039,17 +969,18 @@ def draw_frosted_card(surface, rect, border_radius=14, glow=False):
 
 
 def handle_resize(new_w, new_h):
-    """Dynamically recalculates coordinate centers, surfaces, and camera viewports."""
     global scrn_w, scrn_h, center_x, center_y, render_surface, MAX_STATIC_SIZE
     global cell_size, board_size, start_x, start_y, pixel_x, pixel_y, cam_x, cam_y
+
+    if new_w <= 0 or new_h <= 0:
+        return
 
     scrn_w = new_w
     scrn_h = new_h
     center_x = scrn_w // 2
     center_y = scrn_h // 2
 
-    render_surface = pygame.Surface((scrn_w, scrn_h))
-    pre_render_background_gradient()
+    render_surface = pygame.Surface((scrn_w, scrn_h), depth=32).convert()
 
     MAX_STATIC_SIZE = int((min(scrn_w, scrn_h) * 0.82) // MIN_READABLE_CELL_PX)
     MAX_STATIC_SIZE = MAX_STATIC_SIZE if MAX_STATIC_SIZE % 2 != 0 else MAX_STATIC_SIZE - 1
@@ -1075,8 +1006,8 @@ def handle_resize(new_w, new_h):
         pre_render_maze()
 
 
-def draw_menu(screen):
-    screen.blit(bg_surface, (0, 0))
+def draw_menu(surface):
+    surface.fill(bg_center_rgb)
 
     title_font = pygame.font.SysFont("Segoe UI", 40, bold=True)
     sub_title_font = pygame.font.SysFont("Segoe UI", 15)
@@ -1087,59 +1018,59 @@ def draw_menu(screen):
     window_w, window_h = 740, 480
     window_rect = pygame.Rect(center_x - window_w //
                               2, center_y - window_h // 2, window_w, window_h)
-    draw_frosted_card(screen, window_rect, border_radius=20, glow=True)
+    draw_frosted_card(surface, window_rect, border_radius=20, glow=True)
 
     avatar_rect = pygame.Rect(window_rect.x + 36, window_rect.y + 36, 42, 42)
-    pygame.draw.rect(screen, accent_purple, avatar_rect, border_radius=12)
-    pygame.draw.circle(screen, (255, 255, 255), avatar_rect.center, 8)
+    pygame.draw.rect(surface, accent_purple, avatar_rect, border_radius=12)
+    pygame.draw.circle(surface, (255, 255, 255), avatar_rect.center, 8)
 
     title_surf = title_font.render("Sapphire Dash", True, text_primary)
     sub_surf = sub_title_font.render(
         "Kinetic Vector Labyrinth  •  Arcade Engine", True, text_secondary)
-    screen.blit(title_surf, (avatar_rect.right + 16, window_rect.y + 32))
-    screen.blit(sub_surf, (avatar_rect.right + 18, window_rect.y + 76))
+    surface.blit(title_surf, (avatar_rect.right + 16, window_rect.y + 32))
+    surface.blit(sub_surf, (avatar_rect.right + 18, window_rect.y + 76))
 
     card1_rect = pygame.Rect(
         window_rect.x + 36, window_rect.y + 128, window_w - 72, 110)
-    draw_frosted_card(screen, card1_rect, border_radius=14)
+    draw_frosted_card(surface, card1_rect, border_radius=14)
 
     pill1 = pygame.Rect(card1_rect.right - 120, card1_rect.y + 18, 100, 24)
-    pygame.draw.rect(screen, (53, 43, 87), pill1, border_radius=12)
+    pygame.draw.rect(surface, (53, 43, 87), pill1, border_radius=12)
     p1_tag = pill_font.render("SELECT [1]", True, accent_bright)
-    screen.blit(p1_tag, (pill1.centerx - p1_tag.get_width() //
-                2, pill1.centery - p1_tag.get_height() // 2))
+    surface.blit(p1_tag, (pill1.centerx - p1_tag.get_width() //
+                 2, pill1.centery - p1_tag.get_height() // 2))
 
     c1_title = card_title_font.render("Custom Grid Arena", True, text_primary)
     c1_desc = card_sub_font.render(
         "Dial any matrix dimension from 11 to 999. Follow-cam engages automatically.", True, text_secondary)
-    screen.blit(c1_title, (card1_rect.x + 22, card1_rect.y + 24))
-    screen.blit(c1_desc, (card1_rect.x + 22, card1_rect.y + 60))
+    surface.blit(c1_title, (card1_rect.x + 22, card1_rect.y + 24))
+    surface.blit(c1_desc, (card1_rect.x + 22, card1_rect.y + 60))
 
     card2_rect = pygame.Rect(
         window_rect.x + 36, window_rect.y + 254, window_w - 72, 110)
-    draw_frosted_card(screen, card2_rect, border_radius=14)
+    draw_frosted_card(surface, card2_rect, border_radius=14)
 
     pill2 = pygame.Rect(card2_rect.right - 120, card2_rect.y + 18, 100, 24)
-    pygame.draw.rect(screen, accent_purple, pill2, border_radius=12)
+    pygame.draw.rect(surface, accent_purple, pill2, border_radius=12)
     p2_tag = pill_font.render("SELECT [2]", True, (255, 255, 255))
-    screen.blit(p2_tag, (pill2.centerx - p2_tag.get_width() //
-                2, pill2.centery - p2_tag.get_height() // 2))
+    surface.blit(p2_tag, (pill2.centerx - p2_tag.get_width() //
+                 2, pill2.centery - p2_tag.get_height() // 2))
 
     c2_title = card_title_font.render(
         "Endless Gauntlet Run", True, text_primary)
     c2_desc = card_sub_font.render(
         "Non-stop scaling: 15x15 -> 995x995 (+10/lvl). Single-run permadeath rules.", True, text_secondary)
-    screen.blit(c2_title, (card2_rect.x + 22, card2_rect.y + 24))
-    screen.blit(c2_desc, (card2_rect.x + 22, card2_rect.y + 60))
+    surface.blit(c2_title, (card2_rect.x + 22, card2_rect.y + 24))
+    surface.blit(c2_desc, (card2_rect.x + 22, card2_rect.y + 60))
 
     esc_surf = card_sub_font.render(
-        "Press [ESC] to Exit System", True, text_muted)
-    screen.blit(esc_surf, (window_rect.centerx -
-                esc_surf.get_width() // 2, window_rect.bottom - 42))
+        "[ESC] Exit System  •  [F] Toggle Fullscreen", True, text_muted)
+    surface.blit(esc_surf, (window_rect.centerx -
+                 esc_surf.get_width() // 2, window_rect.bottom - 42))
 
 
-def draw_config(screen):
-    screen.blit(bg_surface, (0, 0))
+def draw_config(surface):
+    surface.fill(bg_center_rgb)
 
     title_font = pygame.font.SysFont("Segoe UI", 30, bold=True)
     sub_font = pygame.font.SysFont("Segoe UI", 14)
@@ -1148,50 +1079,52 @@ def draw_config(screen):
     window_w, window_h = 600, 360
     window_rect = pygame.Rect(center_x - window_w //
                               2, center_y - window_h // 2, window_w, window_h)
-    draw_frosted_card(screen, window_rect, border_radius=18, glow=True)
+    draw_frosted_card(surface, window_rect, border_radius=18, glow=True)
 
     title_surf = title_font.render("Matrix Dimensions", True, text_primary)
     info_surf = sub_font.render(
         f"Display: {scrn_w}x{scrn_h}  •  Static Ceiling: {MAX_STATIC_SIZE}x{MAX_STATIC_SIZE}", True, text_secondary)
-    screen.blit(title_surf, (window_rect.centerx -
-                title_surf.get_width() // 2, window_rect.y + 36))
-    screen.blit(info_surf, (window_rect.centerx -
-                info_surf.get_width() // 2, window_rect.y + 80))
+    prompt_surf = sub_font.render(
+        "[ENTER] Deploy  •  [ESC] Menu  •  [F] Fullscreen", True, text_muted)
+
+    surface.blit(title_surf, (window_rect.centerx -
+                 title_surf.get_width() // 2, window_rect.y + 36))
+    surface.blit(info_surf, (window_rect.centerx -
+                 info_surf.get_width() // 2, window_rect.y + 80))
 
     box_w, box_h = 240, 72
     box_rect = pygame.Rect(window_rect.centerx - box_w //
                            2, window_rect.y + 130, box_w, box_h)
-    draw_frosted_card(screen, box_rect, border_radius=12)
-    pygame.draw.rect(screen, accent_purple, box_rect,
+    draw_frosted_card(surface, box_rect, border_radius=12)
+    pygame.draw.rect(surface, accent_purple, box_rect,
                      width=1, border_radius=12)
 
     display_val = input_text if input_text else "_"
     input_surf = input_font.render(display_val, True, accent_bright)
-    screen.blit(input_surf, (box_rect.centerx - input_surf.get_width() //
-                2, box_rect.centery - input_surf.get_height() // 2))
+    surface.blit(input_surf, (box_rect.centerx - input_surf.get_width() //
+                 2, box_rect.centery - input_surf.get_height() // 2))
 
-    prompt_surf = sub_font.render(
-        "Press [ENTER] to Deploy  •  [ESC] for Menu", True, text_muted)
-    screen.blit(prompt_surf, (window_rect.centerx -
-                prompt_surf.get_width() // 2, window_rect.bottom - 45))
+    surface.blit(prompt_surf, (window_rect.centerx -
+                 prompt_surf.get_width() // 2, window_rect.bottom - 45))
 
 
-def draw(screen):
+def draw(screen=None):
     if state == "MENU":
-        draw_menu(screen)
+        draw_menu(render_surface)
         return
     elif state == "CONFIG":
-        draw_config(screen)
+        draw_config(render_surface)
         return
 
-    render_surface.blit(bg_surface, (0, 0))
-
-    ox = round(cam_x) if is_camera_follow else 0
-    oy = round(cam_y) if is_camera_follow else 0
+    ox = round(
+        cam_x - shake_offset_x) if is_camera_follow else round(-shake_offset_x)
+    oy = round(
+        cam_y - shake_offset_y) if is_camera_follow else round(-shake_offset_y)
 
     if maze_surface and not is_camera_follow:
-        render_surface.blit(maze_surface, (0, 0))
+        render_surface.blit(maze_surface, (-ox, -oy))
     else:
+        render_surface.fill(bg_center_rgb)
         min_col = max(0, int(ox // cell_size) - 1)
         max_col = min(rows, int((ox + scrn_w) // cell_size) + 2)
         min_row = max(0, int(oy // cell_size) - 1)
@@ -1216,9 +1149,6 @@ def draw(screen):
                     pygame.draw.rect(
                         render_surface, corridor_color_rgb, seamless_rect)
 
-    # ---------------------------------------------------------
-    # Receding Cyan Vortex Exit (Hollow, Non-Competing)
-    # ---------------------------------------------------------
     if end_point:
         ex = start_x + end_point[1] * cell_size - ox
         ey = start_y + end_point[0] * cell_size - oy
@@ -1246,7 +1176,6 @@ def draw(screen):
                                 end_rect.centery - core_dim // 2, core_dim, core_dim)
         pygame.draw.rect(render_surface, exit_ring_rgb, core_rect)
 
-    # Seamless Solid Electric Purple Ribbon Trail
     for key in trail_history:
         rx = start_x + key[1] * cell_size - ox
         ry = start_y + key[0] * cell_size - oy
@@ -1296,7 +1225,6 @@ def draw(screen):
     player_rect = pygame.Rect(
         round(px - ox), round(py - oy), round(pw), round(ph))
 
-    # Stepped Lavender Bloom
     glow_surf = pygame.Surface((scrn_w, scrn_h), pygame.SRCALPHA)
     pygame.draw.rect(
         glow_surf, (color[0], color[1], color[2], 50), player_rect.inflate(8, 8), 1)
@@ -1309,9 +1237,6 @@ def draw(screen):
     draw_speed_lines(render_surface)
     draw_exit_pointer(render_surface, ox, oy)
 
-    # ---------------------------------------------------------
-    # UI Dashboard Widgets
-    # ---------------------------------------------------------
     label_font = pygame.font.SysFont("Segoe UI", 11, bold=True)
     val_font = pygame.font.SysFont("Segoe UI", 17, bold=True)
     sub_font = pygame.font.SysFont("Segoe UI", 11)
@@ -1338,7 +1263,7 @@ def draw(screen):
     render_surface.blit(s_val, (steps_card.x + 14, steps_card.y + 28))
     render_surface.blit(s_sub, (steps_card.x + 14, steps_card.y + 47))
 
-    center_w = 480
+    center_w = 520
     center_card = pygame.Rect(center_x - center_w // 2, 22, center_w, 44)
     draw_frosted_card(render_surface, center_card, border_radius=12)
 
@@ -1347,7 +1272,7 @@ def draw(screen):
     cam_str = " • CAM" if is_camera_follow else ""
 
     c_hud_txt = bar_font.render(
-        f"[Z] Undo  •  [H] Hint ({hint_status})  •  [R] Reset  •  {mode_str}{cam_str}", True, text_secondary)
+        f"[Z] Undo • [H] Hint ({hint_status}) • [R] Reset • [F] Screen • {mode_str}{cam_str}", True, text_secondary)
     render_surface.blit(c_hud_txt, (center_card.centerx - c_hud_txt.get_width() //
                         2, center_card.centery - c_hud_txt.get_height() // 2))
 
@@ -1379,6 +1304,3 @@ def draw(screen):
                 "Path Blocked! Press [Z] to Undo or [R] to Restart", True, (244, 63, 94))
         render_surface.blit(text, (modal.centerx - text.get_width() //
                             2, modal.centery - text.get_height() // 2))
-
-    screen.fill(bg_outer_rgb)
-    screen.blit(render_surface, (round(shake_offset_x), round(shake_offset_y)))
