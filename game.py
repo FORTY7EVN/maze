@@ -1,7 +1,12 @@
 import pygame
 import random
 import math
+import sys
 from collections import deque
+
+from audio import AudioManager
+from maze_generation import generate as build_maze
+import ui
 
 pygame.init()
 pygame.mixer.init(frequency=44100, size=-16, channels=1)
@@ -44,7 +49,7 @@ bg_outer_rgb = (7, 6, 12)
 bg_center_rgb = (26, 19, 44)
 
 wall_color_rgb = (16, 13, 28)
-corridor_color_rgb = (28, 23, 46)
+corridor_color_rgb = bg_center_rgb  # (28, 23, 46)
 
 card_bg_rgb = (22, 19, 34)
 card_border_rgb = (58, 48, 88)
@@ -128,34 +133,8 @@ def update_visual_effects(dt_ms):
             shockwaves.remove(sw)
 
 
-def make_tone(freq, duration_ms, wave_type="sine", volume=0.25):
-    sample_rate = 44100
-    n_samples = int(sample_rate * (duration_ms / 1000.0))
-    buf = bytearray(n_samples * 2)
-    for i in range(n_samples):
-        t = float(i) / sample_rate
-        if wave_type == "sine":
-            val = math.sin(2.0 * math.pi * freq * t)
-        elif wave_type == "noise":
-            val = random.uniform(-1.0, 1.0)
-        else:
-            val = 1.0 if (i // (sample_rate // max(1, int(freq)))
-                          ) % 2 == 0 else -1.0
-        val *= max(0.0, 1.0 - (i / n_samples)) * volume
-        sample = int(val * 32767)
-        buf[i * 2:i * 2 +
-            2] = sample.to_bytes(2, byteorder='little', signed=True)
-    return pygame.mixer.Sound(bytes(buf))
-
-
-try:
-    sound_deadend = make_tone(110, 120, "square", volume=0.25)
-    sound_undo = make_tone(320, 40, "sine", volume=0.18)
-    sound_hint = make_tone(580, 180, "sine", volume=0.20)
-    sound_levelup = make_tone(750, 240, "sine", volume=0.25)
-    audio_enabled = True
-except Exception:
-    audio_enabled = False
+# Audio synthesis lives in its own module; this object is the gameplay-facing API.
+audio = AudioManager()
 
 glide_streak = 0
 BASE_CORRIDOR_FREQ = 290.0
@@ -164,26 +143,11 @@ FREQ_STEP = 7.5
 
 
 def play_corridor_glide_sfx():
-    if not audio_enabled:
-        return
-    freq = min(MAX_CORRIDOR_FREQ, BASE_CORRIDOR_FREQ +
-               (glide_streak * FREQ_STEP))
-    dur_ms = max(14, int(24 - min(8, glide_streak * 0.3)))
-    tone = make_tone(freq, dur_ms, wave_type="sine", volume=0.15)
-    tone.play()
+    audio.play_glide(glide_streak)
 
 
 def play_sfx(name):
-    if not audio_enabled:
-        return
-    if name == "deadend":
-        sound_deadend.play()
-    elif name == "undo":
-        sound_undo.play()
-    elif name == "hint":
-        sound_hint.play()
-    elif name == "levelup":
-        sound_levelup.play()
+    audio.play(name)
 
 
 player_grid = [1, 0]
@@ -247,7 +211,7 @@ def initialize():
             board["value"][key] = 1
 
 
-def generate():
+def generate_legacy():
     global end_point, optimal_steps
 
     max_attempts = 15
@@ -398,6 +362,12 @@ def generate():
     board["value"][inner_tile] = 0
     board["value"][exit_tile] = 0
     end_point = exit_tile
+
+
+def generate():
+    """Build a fresh maze using the dedicated maze-generation module."""
+    global end_point, optimal_steps
+    board["value"], end_point, optimal_steps = build_maze(rows, start_point)
 
 
 def pre_render_maze():
@@ -1006,7 +976,7 @@ def handle_resize(new_w, new_h):
         pre_render_maze()
 
 
-def draw_menu(surface):
+def draw_menu_legacy(surface):
     surface.fill(bg_center_rgb)
 
     title_font = pygame.font.SysFont("Segoe UI", 40, bold=True)
@@ -1069,7 +1039,7 @@ def draw_menu(surface):
                  esc_surf.get_width() // 2, window_rect.bottom - 42))
 
 
-def draw_config(surface):
+def draw_config_legacy(surface):
     surface.fill(bg_center_rgb)
 
     title_font = pygame.font.SysFont("Segoe UI", 30, bold=True)
@@ -1110,10 +1080,10 @@ def draw_config(surface):
 
 def draw(screen=None):
     if state == "MENU":
-        draw_menu(render_surface)
+        ui.draw_menu(render_surface, sys.modules[__name__])
         return
     elif state == "CONFIG":
-        draw_config(render_surface)
+        ui.draw_config(render_surface, sys.modules[__name__])
         return
 
     ox = round(
