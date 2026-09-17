@@ -63,8 +63,11 @@ Once the maze loads:
 
 ```text
 maze/
-├── game.py      # Core maze logic, rendering, movement, effects, and audio
-├── main.py      # Game loop and input handling
+├── main.py            # OpenGL window, event loop, and display presentation
+├── game.py            # Gameplay state, movement, effects, HUD, and orchestration
+├── maze_generation.py # Self-contained procedural maze construction
+├── audio.py           # Procedural sound-effect synthesis and playback
+├── ui.py              # Start menu and maze-size configuration screens
 ├── requirements.txt
 ├── README.md
 └── .gitignore   # optional project ignore file if added later
