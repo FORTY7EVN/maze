@@ -6,7 +6,7 @@ from collections import deque
 
 from audio import AudioManager
 from maze_generation import generate as build_maze
-import ui
+import ui_cached as ui
 
 pygame.init()
 pygame.mixer.init(frequency=44100, size=-16, channels=1)
@@ -76,10 +76,62 @@ shake_offset_y = 0
 
 particles = []
 shockwaves = []
+particle_pool = []
+shockwave_pool = []
+MAX_PARTICLES = 128
+MAX_SHOCKWAVES = 16
 afterimages = deque(maxlen=6)
 current_move_dir = (0, 0)
 
 render_surface = pygame.Surface((scrn_w, scrn_h), depth=32)
+hud_fonts = None
+hud_text_cache = {}
+frosted_card_cache = {}
+glow_surface_cache = {}
+transient_surface_cache = {}
+speed_lines_surface = None
+exit_pointer_font = None
+exit_distance_cache = (None, None)
+
+
+def get_hud_fonts():
+    """Create HUD fonts once, rather than allocating five fonts per frame."""
+    global hud_fonts
+    if hud_fonts is None:
+        hud_fonts = (
+            pygame.font.SysFont("Segoe UI", 11, bold=True),
+            pygame.font.SysFont("Segoe UI", 17, bold=True),
+            pygame.font.SysFont("Segoe UI", 11),
+            pygame.font.SysFont("Segoe UI", 13),
+            pygame.font.SysFont("Segoe UI", 18, bold=True),
+        )
+    return hud_fonts
+
+
+def render_hud_text(font, text, color):
+    """Reuse rendered labels until their displayed value actually changes."""
+    cache_key = (id(font), text, color)
+    rendered = hud_text_cache.get(cache_key)
+    if rendered is None:
+        if len(hud_text_cache) >= 128:
+            hud_text_cache.clear()
+        rendered = font.render(text, True, color)
+        hud_text_cache[cache_key] = rendered
+    return rendered
+
+
+def get_transient_surface(width, height):
+    """Return a reusable alpha surface for short-lived visual effects."""
+    key = (max(1, width), max(1, height))
+    surface = transient_surface_cache.get(key)
+    if surface is None:
+        if len(transient_surface_cache) >= 64:
+            transient_surface_cache.clear()
+        surface = pygame.Surface(key, pygame.SRCALPHA)
+        transient_surface_cache[key] = surface
+    else:
+        surface.fill((0, 0, 0, 0))
+    return surface
 
 
 def trigger_screen_shake(intensity=8.0):
@@ -89,19 +141,27 @@ def trigger_screen_shake(intensity=8.0):
 
 def spawn_particles(px, py, count=15, color=(192, 132, 252), speed=3.0, max_life=300):
     for _ in range(count):
+        if len(particles) >= MAX_PARTICLES:
+            break
         angle = random.uniform(0, 2 * math.pi)
         vel = random.uniform(speed * 0.4, speed)
         vx = math.cos(angle) * vel
         vy = math.sin(angle) * vel
         size = random.uniform(2.0, max(3.0, cell_size * 0.35))
         life = random.uniform(max_life * 0.6, max_life)
-        particles.append([px, py, vx, vy, life, life, color, size])
+        particle = particle_pool.pop() if particle_pool else [0.0] * 8
+        particle[:] = (px, py, vx, vy, life, life, color, size)
+        particles.append(particle)
 
 
 def spawn_square_shockwave(cx, cy, max_r=None, color=(168, 85, 247)):
     if max_r is None:
         max_r = max(12, cell_size * 2.8)
-    shockwaves.append([cx, cy, 2.0, max_r, 255, color])
+    if len(shockwaves) >= MAX_SHOCKWAVES:
+        return
+    shockwave = shockwave_pool.pop() if shockwave_pool else [0.0] * 6
+    shockwave[:] = (cx, cy, 2.0, max_r, 255, color)
+    shockwaves.append(shockwave)
 
 
 def update_visual_effects(dt_ms):
@@ -118,19 +178,37 @@ def update_visual_effects(dt_ms):
         shake_offset_x = 0
         shake_offset_y = 0
 
-    for p in particles[:]:
+    for index in range(len(particles) - 1, -1, -1):
+        p = particles[index]
         p[0] += p[2] * (dt_ms / 16.6)
         p[1] += p[3] * (dt_ms / 16.6)
         p[4] -= dt_ms
         if p[4] <= 0:
-            particles.remove(p)
+            particles[index] = particles[-1]
+            particles.pop()
+            if len(particle_pool) < MAX_PARTICLES:
+                particle_pool.append(p)
 
-    for sw in shockwaves[:]:
+    for index in range(len(shockwaves) - 1, -1, -1):
+        sw = shockwaves[index]
         sw[2] += ((sw[3] - sw[2]) * 14.0 * dt_s) + (60.0 * dt_s)
         progress = sw[2] / sw[3]
         sw[4] = max(0, int(255 * (1.0 - progress)))
         if progress >= 1.0 or sw[4] <= 0:
-            shockwaves.remove(sw)
+            shockwaves[index] = shockwaves[-1]
+            shockwaves.pop()
+            if len(shockwave_pool) < MAX_SHOCKWAVES:
+                shockwave_pool.append(sw)
+
+
+def clear_transient_effects():
+    """Return active effect records to bounded pools for the next run."""
+    while particles and len(particle_pool) < MAX_PARTICLES:
+        particle_pool.append(particles.pop())
+    particles.clear()
+    while shockwaves and len(shockwave_pool) < MAX_SHOCKWAVES:
+        shockwave_pool.append(shockwaves.pop())
+    shockwaves.clear()
 
 
 # Audio synthesis lives in its own module; this object is the gameplay-facing API.
@@ -467,8 +545,7 @@ def load():
     moves_count = 0
     start_time_ms = pygame.time.get_ticks()
     final_elapsed_seconds = 0.0
-    particles.clear()
-    shockwaves.clear()
+    clear_transient_effects()
     afterimages.clear()
     shake_intensity = 0.0
     input_buffer.clear()
@@ -817,6 +894,7 @@ def update_player_animation(dt_ms=16.6):
 
 
 def draw_exit_pointer(surface, ox, oy):
+    global exit_pointer_font, exit_distance_cache
     if not end_point or not is_camera_follow:
         return
 
@@ -862,8 +940,12 @@ def draw_exit_pointer(surface, ox, oy):
 
     dist_tiles = int(math.hypot(
         end_point[0] - player_grid[0], end_point[1] - player_grid[1]))
-    font = pygame.font.SysFont("Consolas", 14, bold=True)
-    txt = font.render(f"{dist_tiles}m", True, exit_ring_rgb)
+    if exit_pointer_font is None:
+        exit_pointer_font = pygame.font.SysFont("Consolas", 14, bold=True)
+    if exit_distance_cache[0] != dist_tiles:
+        exit_distance_cache = (dist_tiles, exit_pointer_font.render(
+            f"{dist_tiles}m", True, exit_ring_rgb))
+    txt = exit_distance_cache[1]
 
     txt_x = edge_x - math.cos(angle) * 24 - txt.get_width() // 2
     txt_y = edge_y - math.sin(angle) * 24 - txt.get_height() // 2
@@ -885,20 +967,32 @@ def draw_hint_line(surface, ox, oy):
     if len(points) < 2:
         return
 
-    glow_surf = pygame.Surface((scrn_w, scrn_h), pygame.SRCALPHA)
+    line_width = max(4, cell_size // 2)
+    left = max(0, int(min(x for x, _ in points) - line_width - 2))
+    top = max(0, int(min(y for _, y in points) - line_width - 2))
+    right = min(scrn_w, int(max(x for x, _ in points) + line_width + 3))
+    bottom = min(scrn_h, int(max(y for _, y in points) + line_width + 3))
+    if right <= left or bottom <= top:
+        return
+    local_points = [(x - left, y - top) for x, y in points]
+    glow_surf = get_transient_surface(right - left, bottom - top)
     pygame.draw.lines(glow_surf, (192, 132, 252, int(
-        alpha * 0.45)), False, points, max(4, cell_size // 2))
+        alpha * 0.45)), False, local_points, line_width)
     pygame.draw.lines(glow_surf, (241, 240, 247, alpha),
-                      False, points, max(1, cell_size // 6))
-    surface.blit(glow_surf, (0, 0))
+                      False, local_points, max(1, cell_size // 6))
+    surface.blit(glow_surf, (left, top))
 
 
 def draw_speed_lines(surface):
+    global speed_lines_surface
     if glide_streak < 5:
         return
 
     dh, dw = current_move_dir
-    line_surf = pygame.Surface((scrn_w, scrn_h), pygame.SRCALPHA)
+    if speed_lines_surface is None or speed_lines_surface.get_size() != (scrn_w, scrn_h):
+        speed_lines_surface = pygame.Surface((scrn_w, scrn_h), pygame.SRCALPHA)
+    line_surf = speed_lines_surface
+    line_surf.fill((0, 0, 0, 0))
     streak_intensity = min(1.0, (glide_streak - 4) / 8.0)
     alpha = int(140 * streak_intensity)
 
@@ -925,9 +1019,13 @@ def draw_speed_lines(surface):
 
 
 def draw_frosted_card(surface, rect, border_radius=14, glow=False):
-    bg_s = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
-    pygame.draw.rect(bg_s, (card_bg_rgb[0], card_bg_rgb[1], card_bg_rgb[2], 230), (
-        0, 0, rect.width, rect.height), border_radius=border_radius)
+    cache_key = (rect.width, rect.height, border_radius)
+    bg_s = frosted_card_cache.get(cache_key)
+    if bg_s is None:
+        bg_s = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
+        pygame.draw.rect(bg_s, (card_bg_rgb[0], card_bg_rgb[1], card_bg_rgb[2], 230), (
+            0, 0, rect.width, rect.height), border_radius=border_radius)
+        frosted_card_cache[cache_key] = bg_s
     surface.blit(bg_s, rect.topleft)
 
     pygame.draw.rect(surface, card_border_rgb, rect,
@@ -939,7 +1037,7 @@ def draw_frosted_card(surface, rect, border_radius=14, glow=False):
 
 
 def handle_resize(new_w, new_h):
-    global scrn_w, scrn_h, center_x, center_y, render_surface, MAX_STATIC_SIZE
+    global scrn_w, scrn_h, center_x, center_y, render_surface, MAX_STATIC_SIZE, hud_fonts, speed_lines_surface
     global cell_size, board_size, start_x, start_y, pixel_x, pixel_y, cam_x, cam_y
 
     if new_w <= 0 or new_h <= 0:
@@ -951,6 +1049,12 @@ def handle_resize(new_w, new_h):
     center_y = scrn_h // 2
 
     render_surface = pygame.Surface((scrn_w, scrn_h), depth=32).convert()
+    hud_fonts = None
+    hud_text_cache.clear()
+    frosted_card_cache.clear()
+    glow_surface_cache.clear()
+    transient_surface_cache.clear()
+    speed_lines_surface = None
 
     MAX_STATIC_SIZE = int((min(scrn_w, scrn_h) * 0.82) // MIN_READABLE_CELL_PX)
     MAX_STATIC_SIZE = MAX_STATIC_SIZE if MAX_STATIC_SIZE % 2 != 0 else MAX_STATIC_SIZE - 1
@@ -1169,7 +1273,7 @@ def draw(screen=None):
 
     for idx, (gx, gy, gw, gh, col) in enumerate(afterimages):
         alpha_factor = (idx + 1) / (len(afterimages) + 1)
-        ghost_surf = pygame.Surface((round(gw), round(gh)), pygame.SRCALPHA)
+        ghost_surf = get_transient_surface(round(gw), round(gh))
         ghost_surf.fill((col[0], col[1], col[2], int(95 * alpha_factor)))
         render_surface.blit(ghost_surf, (round(gx - ox), round(gy - oy)))
 
@@ -1177,7 +1281,7 @@ def draw(screen=None):
         cx, cy, current_r, _, alpha, col = sw
         side = int(current_r * 2)
         if side > 2 and alpha > 0:
-            sw_surf = pygame.Surface((side, side), pygame.SRCALPHA)
+            sw_surf = get_transient_surface(side, side)
             pygame.draw.rect(
                 sw_surf, (col[0], col[1], col[2], alpha), (0, 0, side, side), 1)
             render_surface.blit(
@@ -1195,40 +1299,48 @@ def draw(screen=None):
     player_rect = pygame.Rect(
         round(px - ox), round(py - oy), round(pw), round(ph))
 
-    glow_surf = pygame.Surface((scrn_w, scrn_h), pygame.SRCALPHA)
+    # Reuse a small local glow buffer instead of allocating a full-screen alpha
+    # surface every frame.
+    glow_bounds = player_rect.inflate(10, 10)
+    glow_surf = glow_surface_cache.get(glow_bounds.size)
+    if glow_surf is None:
+        if len(glow_surface_cache) >= 16:
+            glow_surface_cache.clear()
+        glow_surf = pygame.Surface(glow_bounds.size, pygame.SRCALPHA)
+        glow_surface_cache[glow_bounds.size] = glow_surf
+    else:
+        glow_surf.fill((0, 0, 0, 0))
+    local_player = player_rect.move(-glow_bounds.x, -glow_bounds.y)
     pygame.draw.rect(
-        glow_surf, (color[0], color[1], color[2], 50), player_rect.inflate(8, 8), 1)
+        glow_surf, (color[0], color[1], color[2], 50), local_player.inflate(8, 8), 1)
     pygame.draw.rect(
-        glow_surf, (color[0], color[1], color[2], 130), player_rect.inflate(2, 2), 1)
-    render_surface.blit(glow_surf, (0, 0))
+        glow_surf, (color[0], color[1], color[2], 130), local_player.inflate(2, 2), 1)
+    render_surface.blit(glow_surf, glow_bounds.topleft)
 
     pygame.draw.rect(render_surface, color, player_rect)
 
     draw_speed_lines(render_surface)
     draw_exit_pointer(render_surface, ox, oy)
 
-    label_font = pygame.font.SysFont("Segoe UI", 11, bold=True)
-    val_font = pygame.font.SysFont("Segoe UI", 17, bold=True)
-    sub_font = pygame.font.SysFont("Segoe UI", 11)
-    bar_font = pygame.font.SysFont("Segoe UI", 13)
+    label_font, val_font, sub_font, bar_font, banner_font = get_hud_fonts()
 
     time_card = pygame.Rect(28, 22, 148, 64)
     draw_frosted_card(render_surface, time_card, border_radius=12)
     current_time = final_elapsed_seconds if (is_won or is_game_over) else (
         pygame.time.get_ticks() - start_time_ms) / 1000.0
-    t_lbl = label_font.render("SESSION", True, text_secondary)
-    t_val = val_font.render(f"{current_time:04.1f}s", True, text_primary)
+    t_lbl = render_hud_text(label_font, "SESSION", text_secondary)
+    t_val = render_hud_text(val_font, f"{current_time:04.1f}s", text_primary)
     render_surface.blit(t_lbl, (time_card.x + 14, time_card.y + 10))
     render_surface.blit(t_val, (time_card.x + 14, time_card.y + 30))
 
     steps_card = pygame.Rect(scrn_w - 188, 22, 160, 64)
     draw_frosted_card(render_surface, steps_card, border_radius=12)
-    s_lbl = label_font.render("EFFICIENCY", True, text_secondary)
-    s_val = val_font.render(
-        f"{moves_count} / {optimal_steps}", True, text_primary)
+    s_lbl = render_hud_text(label_font, "EFFICIENCY", text_secondary)
+    s_val = render_hud_text(
+        val_font, f"{moves_count} / {optimal_steps}", text_primary)
     pct = round((optimal_steps / max(1, moves_count))
                 * 100) if moves_count > 0 else 100
-    s_sub = sub_font.render(f"{pct}% optimality", True, accent_purple)
+    s_sub = render_hud_text(sub_font, f"{pct}% optimality", accent_purple)
     render_surface.blit(s_lbl, (steps_card.x + 14, steps_card.y + 10))
     render_surface.blit(s_val, (steps_card.x + 14, steps_card.y + 28))
     render_surface.blit(s_sub, (steps_card.x + 14, steps_card.y + 47))
@@ -1241,24 +1353,23 @@ def draw(screen=None):
     mode_str = f"GAUNTLET LV.{gauntlet_level}" if game_mode == "GAUNTLET" else f"CUSTOM {rows}x{rows}"
     cam_str = " • CAM" if is_camera_follow else ""
 
-    c_hud_txt = bar_font.render(
-        f"[Z] Undo • [H] Hint ({hint_status}) • [R] Reset • [F] Screen • {mode_str}{cam_str}", True, text_secondary)
+    c_hud_txt = render_hud_text(
+        bar_font, f"[Z] Undo • [H] Hint ({hint_status}) • [R] Reset • [F] Screen • {mode_str}{cam_str}", text_secondary)
     render_surface.blit(c_hud_txt, (center_card.centerx - c_hud_txt.get_width() //
                         2, center_card.centery - c_hud_txt.get_height() // 2))
 
-    banner_font = pygame.font.SysFont("Segoe UI", 18, bold=True)
     if is_gauntlet_completed:
         modal = pygame.Rect(center_x - 290, scrn_h // 2 + 70, 580, 64)
         draw_frosted_card(render_surface, modal, border_radius=14, glow=True)
-        text = banner_font.render(
-            "Gauntlet Cleared! Mastered Level 99 (995x995) • [M] Menu", True, accent_bright)
+        text = render_hud_text(
+            banner_font, "Gauntlet Cleared! Mastered Level 99 (995x995) • [M] Menu", accent_bright)
         render_surface.blit(text, (modal.centerx - text.get_width() //
                             2, modal.centery - text.get_height() // 2))
     elif is_won and game_mode == "CUSTOM":
         modal = pygame.Rect(center_x - 260, scrn_h // 2 + 70, 520, 64)
         draw_frosted_card(render_surface, modal, border_radius=14, glow=True)
-        text = banner_font.render(
-            f"Portal Escaped in {final_elapsed_seconds:.1f}s • Rating: {pct}% • [R] Next", True, accent_bright)
+        text = render_hud_text(
+            banner_font, f"Portal Escaped in {final_elapsed_seconds:.1f}s • Rating: {pct}% • [R] Next", accent_bright)
         render_surface.blit(text, (modal.centerx - text.get_width() //
                             2, modal.centery - text.get_height() // 2))
     elif is_game_over:
@@ -1267,10 +1378,10 @@ def draw(screen=None):
         pygame.draw.rect(render_surface, (244, 63, 94),
                          modal, width=1, border_radius=14)
         if game_mode == "GAUNTLET":
-            text = banner_font.render(
-                f"Run Over at Level {gauntlet_level} ({rows}x{rows}) • [R] Reset to Lv 1", True, (244, 63, 94))
+            text = render_hud_text(
+                banner_font, f"Run Over at Level {gauntlet_level} ({rows}x{rows}) • [R] Reset to Lv 1", (244, 63, 94))
         else:
-            text = banner_font.render(
-                "Path Blocked! Press [Z] to Undo or [R] to Restart", True, (244, 63, 94))
+            text = render_hud_text(
+                banner_font, "Path Blocked! Press [Z] to Undo or [R] to Restart", (244, 63, 94))
         render_surface.blit(text, (modal.centerx - text.get_width() //
                             2, modal.centery - text.get_height() // 2))

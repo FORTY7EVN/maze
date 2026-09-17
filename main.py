@@ -5,6 +5,8 @@ this module uploads that surface to a Direct3D 11 streaming texture every frame
 and presents it via SDL2's D3D11 renderer (SDL_CreateWindowAndRenderer with
 SDL_RENDER_DRIVER=direct3d11).  No PyOpenGL, no comtypes – just SDL2 ctypes.
 """
+import game
+import pygame
 import os
 import sys
 import ctypes
@@ -29,76 +31,78 @@ if sys.platform == "win32":
     except Exception:
         pass
 
-import pygame
-import game
 
 # ── Load SDL2.dll bundled with pygame ────────────────────────────────────────
 _pkg_path = pathlib.Path(importlib.util.find_spec("pygame").origin).parent
-_sdl_dll   = next(_pkg_path.glob("SDL2.dll"))   # always present on Windows
-_sdl        = ctypes.CDLL(str(_sdl_dll))
+_sdl_dll = next(_pkg_path.glob("SDL2.dll"))   # always present on Windows
+_sdl = ctypes.CDLL(str(_sdl_dll))
 
 # ── SDL2 constants ───────────────────────────────────────────────────────────
-SDL_WINDOW_SHOWN              = 0x00000004
-SDL_WINDOW_RESIZABLE          = 0x00000020
+SDL_WINDOW_SHOWN = 0x00000004
+SDL_WINDOW_RESIZABLE = 0x00000020
 SDL_WINDOW_FULLSCREEN_DESKTOP = 0x00001001
-SDL_RENDERER_ACCELERATED      = 0x00000002
-SDL_PIXELFORMAT_ARGB8888      = 0x16362004   # == pygame depth-32 BGRA byte order
-SDL_TEXTUREACCESS_STREAMING   = 1
-SDL_BLENDMODE_NONE            = 0
+SDL_RENDERER_ACCELERATED = 0x00000002
+SDL_PIXELFORMAT_ARGB8888 = 0x16362004   # == pygame depth-32 BGRA byte order
+SDL_TEXTUREACCESS_STREAMING = 1
+SDL_BLENDMODE_NONE = 0
 
 # ── SDL2 function prototypes ─────────────────────────────────────────────────
-_sdl.SDL_CreateWindowAndRenderer.restype  = ctypes.c_int
+_sdl.SDL_CreateWindowAndRenderer.restype = ctypes.c_int
 _sdl.SDL_CreateWindowAndRenderer.argtypes = [
     ctypes.c_int, ctypes.c_int, ctypes.c_uint32,
     ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p),
 ]
-_sdl.SDL_SetWindowTitle.restype  = None
+_sdl.SDL_SetWindowTitle.restype = None
 _sdl.SDL_SetWindowTitle.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
 
-_sdl.SDL_GetWindowSize.restype  = None
+_sdl.SDL_GetWindowSize.restype = None
 _sdl.SDL_GetWindowSize.argtypes = [
-    ctypes.c_void_p, ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int),
+    ctypes.c_void_p, ctypes.POINTER(
+        ctypes.c_int), ctypes.POINTER(ctypes.c_int),
 ]
-_sdl.SDL_SetWindowFullscreen.restype  = ctypes.c_int
+_sdl.SDL_SetWindowFullscreen.restype = ctypes.c_int
 _sdl.SDL_SetWindowFullscreen.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
 
-_sdl.SDL_CreateTexture.restype  = ctypes.c_void_p
+_sdl.SDL_CreateTexture.restype = ctypes.c_void_p
 _sdl.SDL_CreateTexture.argtypes = [
     ctypes.c_void_p, ctypes.c_uint32, ctypes.c_int, ctypes.c_int, ctypes.c_int,
 ]
-_sdl.SDL_DestroyTexture.restype  = None
+_sdl.SDL_DestroyTexture.restype = None
 _sdl.SDL_DestroyTexture.argtypes = [ctypes.c_void_p]
 
-_sdl.SDL_UpdateTexture.restype  = ctypes.c_int
+_sdl.SDL_UpdateTexture.restype = ctypes.c_int
 _sdl.SDL_UpdateTexture.argtypes = [
     ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int,
 ]
-_sdl.SDL_SetTextureBlendMode.restype  = ctypes.c_int
+_sdl.SDL_SetTextureBlendMode.restype = ctypes.c_int
 _sdl.SDL_SetTextureBlendMode.argtypes = [ctypes.c_void_p, ctypes.c_int]
 
-_sdl.SDL_RenderClear.restype  = ctypes.c_int
+_sdl.SDL_RenderClear.restype = ctypes.c_int
 _sdl.SDL_RenderClear.argtypes = [ctypes.c_void_p]
 
-_sdl.SDL_RenderCopy.restype  = ctypes.c_int
+_sdl.SDL_RenderCopy.restype = ctypes.c_int
 _sdl.SDL_RenderCopy.argtypes = [
     ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
 ]
-_sdl.SDL_RenderPresent.restype  = None
+_sdl.SDL_RenderPresent.restype = None
 _sdl.SDL_RenderPresent.argtypes = [ctypes.c_void_p]
 
-_sdl.SDL_DestroyRenderer.restype  = None
+_sdl.SDL_DestroyRenderer.restype = None
 _sdl.SDL_DestroyRenderer.argtypes = [ctypes.c_void_p]
 
-_sdl.SDL_DestroyWindow.restype  = None
+_sdl.SDL_DestroyWindow.restype = None
 _sdl.SDL_DestroyWindow.argtypes = [ctypes.c_void_p]
 
-_sdl.SDL_GetError.restype  = ctypes.c_char_p
+_sdl.SDL_GetError.restype = ctypes.c_char_p
 _sdl.SDL_GetError.argtypes = []
 
 # SDL_SysWMinfo – used to retrieve the HWND for accurate client-rect sizing
+
+
 class _SDL_version(ctypes.Structure):
     _fields_ = [("major", ctypes.c_uint8), ("minor", ctypes.c_uint8),
                 ("patch", ctypes.c_uint8)]
+
 
 class _SDL_SysWMinfo(ctypes.Structure):
     _fields_ = [("version",   _SDL_version),
@@ -108,15 +112,17 @@ class _SDL_SysWMinfo(ctypes.Structure):
                 ("hinstance", ctypes.c_void_p),
                 ("_pad",      ctypes.c_byte * 512)]   # generous padding
 
-_sdl.SDL_GetWindowWMInfo.restype  = ctypes.c_bool
-_sdl.SDL_GetWindowWMInfo.argtypes = [ctypes.c_void_p, ctypes.POINTER(_SDL_SysWMinfo)]
+
+_sdl.SDL_GetWindowWMInfo.restype = ctypes.c_bool
+_sdl.SDL_GetWindowWMInfo.argtypes = [
+    ctypes.c_void_p, ctypes.POINTER(_SDL_SysWMinfo)]
 
 # ── Create the D3D11 window & renderer ───────────────────────────────────────
 pygame.init()
 pygame.mixer.init(frequency=44100, size=-16, channels=1)
 
 windowed_w, windowed_h = 1280, 720
-is_fullscreen          = False
+is_fullscreen = False
 
 # Initialise pygame's display subsystem with a tiny hidden surface.
 # This is required so that pygame.Surface.convert() calls inside game.py
@@ -140,6 +146,16 @@ if _ret != 0 or not _win_ptr or not _ren_ptr:
 
 _sdl.SDL_SetWindowTitle(_win_ptr, b"Sapphire Dash")
 clock = pygame.time.Clock()
+TARGET_FPS = 144
+INACTIVE_FPS = 15
+_focus_lost_events = tuple(event for event in (
+    getattr(pygame, "WINDOWFOCUSLOST", None),
+    getattr(pygame, "WINDOWMINIMIZED", None),
+) if event is not None)
+_focus_gained_events = tuple(event for event in (
+    getattr(pygame, "WINDOWFOCUSGAINED", None),
+    getattr(pygame, "WINDOWRESTORED", None),
+) if event is not None)
 
 active_w = windowed_w
 active_h = windowed_h
@@ -167,7 +183,7 @@ def get_actual_window_size() -> tuple[int, int]:
     if sys.platform == "win32" and _hwnd:
         rect = ctypes.wintypes.RECT()
         ctypes.windll.user32.GetClientRect(_hwnd, ctypes.byref(rect))
-        w = rect.right  - rect.left
+        w = rect.right - rect.left
         h = rect.bottom - rect.top
         if w > 0 and h > 0:
             return w, h
@@ -211,8 +227,12 @@ def render_surface_to_d3d(surf: pygame.Surface) -> None:
     call SDL_RenderPresent (maps to IDXGISwapChain::Present internally).
     """
     pitch = surf.get_width() * 4          # ARGB8888 → 4 bytes per pixel
-    raw   = surf.get_buffer()             # zero-copy buffer view
-    _sdl.SDL_UpdateTexture(_d3d_tex, None, ctypes.c_char_p(bytes(raw)), pitch)
+    raw = surf.get_buffer()
+    # Pass SDL a pointer to pygame's pixels. Converting this buffer to `bytes`
+    # copied the entire frame before every upload (several MB at high DPI).
+    pixel_ptr = ctypes.c_void_p(
+        ctypes.addressof(ctypes.c_char.from_buffer(raw)))
+    _sdl.SDL_UpdateTexture(_d3d_tex, None, pixel_ptr, pitch)
     _sdl.SDL_RenderClear(_ren_ptr)
     _sdl.SDL_RenderCopy(_ren_ptr, _d3d_tex, None, None)   # fullscreen quad
     _sdl.SDL_RenderPresent(_ren_ptr)                       # Present(0, 0)
@@ -238,22 +258,33 @@ sync_viewport(_iw, _ih)
 
 # ── Main loop ─────────────────────────────────────────────────────────────────
 frame_counter = 0
+window_active = True
 
 while game.running:
-    dt = clock.tick(0)
+    # Do not consume a full rendering budget when the game cannot be seen.
+    dt = clock.tick(TARGET_FPS if window_active else INACTIVE_FPS)
 
     frame_counter += 1
     if frame_counter % 30 == 0:
         title = f"Sapphire Dash — {clock.get_fps():.0f} FPS".encode()
         _sdl.SDL_SetWindowTitle(_win_ptr, title)
 
-    real_w, real_h = get_actual_window_size()
-    if real_w != active_w or real_h != active_h:
-        sync_viewport(real_w, real_h)
+    # Resize events handle ordinary changes; periodic polling covers unusual
+    # DPI/fullscreen changes without making a Win32 system call every frame.
+    if frame_counter % 30 == 0:
+        real_w, real_h = get_actual_window_size()
+        if real_w != active_w or real_h != active_h:
+            sync_viewport(real_w, real_h)
 
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             game.running = False
+
+        elif event.type in _focus_lost_events:
+            window_active = False
+
+        elif event.type in _focus_gained_events:
+            window_active = True
 
         elif event.type in (pygame.WINDOWSIZECHANGED, pygame.WINDOWRESIZED,
                             pygame.VIDEORESIZE):
@@ -289,6 +320,11 @@ while game.running:
                     game.reset_game()
                 elif event.key == pygame.K_m:
                     game.state = "MENU"
+
+    # Keep the event queue responsive while unfocused, but skip simulation and
+    # the full texture upload until the window can be seen again.
+    if not window_active:
+        continue
 
     game.update_player_animation(dt)
     game.draw()
